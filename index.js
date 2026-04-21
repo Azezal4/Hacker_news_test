@@ -1,136 +1,75 @@
-// EDIT THIS FILE TO COMPLETE ASSIGNMENT QUESTION 1
-const fs = require("fs");
-const { expect, chromium, test } = require("@playwright/test");
+// QA Wolf Take-Home — Question 1
+// Validates that EXACTLY the first 100 articles on Hacker News/newest
+// are sorted from newest to oldest (descending by Unix timestamp).
+//
+// Run: node index.js
 
+const { chromium, expect } = require("@playwright/test");
+
+const { TARGET_COUNT, HN_URL, HN_EXPECTED_TITLE, HEADLESS } = require("./src/config");
+const { log } = require("./src/logger");
+const { scrapeArticles } = require("./src/scraper");
+const { validateSortOrder, validateInvariants } = require("./src/validators");
+const { writePassReport, writeFailReport, printSummary } = require("./src/reporter");
 
 async function sortHackerNewsArticles() {
-    // launch browser
-    const browser = await chromium.launch({ headless: false });
+    const started = Date.now();
+    const browser = await chromium.launch({ headless: HEADLESS });
     const context = await browser.newContext();
     const page = await context.newPage();
-    // Killing the browser caching
-    const session = await context.newCDPSession(page); 
-    await session.send('Network.setCacheDisabled', { cacheDisabled: true });
-    
-    // Handling exceptions
+
+    let exitCode = 0;
+
     try {
-        // Test 1: go to Hacker News
-        await page.goto("https://news.ycombinator.com/newest");
-        await expect(page).toHaveTitle("New Links | Hacker News");
+        log.info(`Navigating to ${HN_URL}`);
+        await page.goto(HN_URL);
+        await expect(page).toHaveTitle(HN_EXPECTED_TITLE);
 
-        // Use a Map to store unique articles by URL to handle "pagination shifting"
-        const articleMap = new Map();
+        const { articles, pageLoads } = await scrapeArticles(page, TARGET_COUNT);
 
-        // fetching all the relevant topics such as URL, Title, Timestamps and Links
-        while (articleMap.size < 100) {
-            await page.waitForSelector(".athing");
-
-            const pageData = await page.evaluate(() => {
-                const results = [];
-                const rows = document.querySelectorAll(".athing");
-
-                rows.forEach((row) => {
-                    const titleElement = row.querySelector(".titleline > a");
-                    const nextRow = row.nextElementSibling;
-                    const ageElement = nextRow ? nextRow.querySelector(".age") : null;
-
-                    if (titleElement && ageElement) {
-                        const title = titleElement.innerText;
-                        const url = titleElement.href;
-                        const timestampAttr = ageElement.getAttribute("title");
-
-                        var unixTimestamps = Number(timestampAttr.split(" ")[1]);
-                        results.push({ title, url, timestamp: unixTimestamps });
-                    }
-                });
-                return results;
-            });
-
-            // Test Condition: If a new article is posted during test
-            // old one might get shifted making duplicate data during pagination
-            pageData.forEach(art => articleMap.set(art.url, art));
-            console.log(`Collected ${articleMap.size} unique articles so far...`)
-            
-            // locate and autoclink on more
-            if (articleMap.size < 100) {
-                var moreButton = page.locator(".morelink");
-                if (await moreButton.isVisible()) {
-                    await moreButton.click();
-                } else {
-                    break;
-                }
-            }
+        if (articles.length < TARGET_COUNT) {
+            log.fail(`Could not collect ${TARGET_COUNT} articles (got ${articles.length})`);
+            exitCode = 1;
+            return;
         }
-        // Convert map value to array
-        var allNews = Array.from(articleMap.values());
-        // Slicing data as it fetched 120
-        const sliced100 = allNews.slice(0, 100);
-       
-        const failureItems = [];
 
-        // validating fetched and sorted items : bool
-        const isSorted = sliced100.every(
-            (val, i) => {
-                if (i === 0) return true 
-                return sliced100[i - 1].timestamp >= val.timestamp
-        });
+        const first100 = articles.slice(0, TARGET_COUNT);
 
-        if (isSorted) {
-            console.log("Articles are sorted in Ascending order \n");
-            /* 
-            Note: Unable to use playwright-reporter because it lacked project run scope
-            Generating custom csv file for further human validation.
-            */
-           const csvRows = ["Rank,Title, URL, Human_Readable_Date, Timestamp"];
-           const csvData = sliced100.map((pd, index) => {
-                return `"${index + 1}", "${pd.title}", "${pd.url}", ${pd.timestamp}, ${new Date(pd.timestamp)}`;
+        const sortResult = validateSortOrder(first100);
+        const invResult  = validateInvariants(first100);
+
+        printSummary(first100, Date.now() - started, pageLoads);
+
+        if (sortResult.passed) {
+            log.pass(`All ${TARGET_COUNT} articles are sorted newest-to-oldest`);
+            log.info(`Report: ${writePassReport(first100)}`);
+        } else {
+            log.fail(`Sort order violated in ${sortResult.violations.length} place(s):`);
+            sortResult.violations.forEach((v) => {
+                const snippet = v.curr.title.slice(0, 60);
+                console.error(`  @ rank ${v.index}→${v.index + 1}: "${snippet}" is ${v.gapSeconds}s newer than its predecessor`);
             });
-
-            fs.writeFileSync("passed_sort_cases.csv", csvRows + csvData.join("\n"));
-            console.log("Results saved to hacker_news_results.csv");
-            
-            await page.goto(
-                "https://i.pinimg.com/736x/a5/99/ab/a599ab0a566a169aa0cd5ecbb4036e7d.jpg",
-            );
-            await page.waitForTimeout(5000);
-        } 
-        else {
-            // Error Segregation : if failed list out the failed ones in the csv file
-            console.log("Fetched articles not sorted");
-            sliced100.forEach((val, i) => {
-                if (i > 0 && sliced100[i - 1].timestamp < val.timestamp) {
-                    console.error(`SORT VIOLATION FOUND: -----------------------`);
-                    console.error(`Index ${i-1}: ${sliced100[i-1].title} (TS: ${sliced100[i-1].timestamp})`);
-                    console.error(`Index ${i}: ${val.title} (TS: ${val.timestamp})`);
-                    console.error(`Difference: ${val.timestamp - sliced100[i-1].timestamp} seconds out of order.`);
-                    failureItems.push({
-                            rank: i + 1,
-                            title: val.title,
-                            timestamp: val.timestamp,
-                            error: `Newer than rank ${i}`
-                    });
-                }
-            });
-            // reporting failed test cases
-            const failureHeader = "Index,Title,URL,Timestamp,Human_Readable_Date\n";
-            const failureData = failureItems.map((pd) => {
-                return `"${pd.rank}","${pd.title}","${pd.url}",${pd.timestamp},"${new Date(pd.timestamp * 1000).toLocaleString()}"`;
-            }).join("\n");
-
-            fs.writeFileSync("failed_sort_cases.csv", failureHeader + failureData);
-            console.warn(`Failure report generated: failed_sort_cases.csv (${failureItems.length} items)`);
+            log.info(`Failure report: ${writeFailReport(sortResult.violations)}`);
+            exitCode = 1;
         }
-    } 
-    catch (e) {
-        console.log("Error Occured: ", e);
-    } 
-    finally {
-        // marks completion of all test cases
+
+        if (invResult.passed) {
+            log.pass(`All invariants passed (unique URLs, valid timestamps, non-empty titles)`);
+        } else {
+            log.fail(`Invariant violations:`);
+            invResult.issues.forEach((i) => console.error(`  ${i}`));
+            exitCode = 1;
+        }
+    } catch (err) {
+        log.fail(`Unexpected error: ${err.message}`);
+        console.error(err);
+        exitCode = 1;
+    } finally {
         await browser.close();
+        process.exit(exitCode);
     }
 }
 
 (async () => {
-    // wait for the page to load
     await sortHackerNewsArticles();
 })();
