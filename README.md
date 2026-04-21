@@ -1,59 +1,63 @@
-# 🐺 QA Wolf Take Home Assignment
+# Solution Notes
 
-Welcome to the QA Wolf take home assignment for our [QA Engineer](https://www.task-wolf.com/apply-qae) role! We appreciate your interest and look forward to seeing what you come up with.
+## Run it
 
-## Instructions
+```bash
+npm install
+node index.js
+```
 
-This assignment has two questions as outlined below. When you are done, upload your assignment to our [application page](https://www.task-wolf.com/apply-qae):
+Launches Chromium (headed so you can watch), scrapes HN/newest until it has 100 unique articles, validates sort order, writes a CSV to `reports/`. Exit code 0 on pass, 1 on fail.
 
+## Structure
 
-### Question 1
+```
+index.js              entry point
+src/config.js         constants
+src/logger.js         [INFO]/[PASS]/[FAIL] prefixes
+src/scraper.js        HN page interaction
+src/validators.js     sort check + invariants (pure functions)
+src/reporter.js       CSV output + summary
+```
 
-In this assignment, you will create a script on [Hacker News](https://news.ycombinator.com/) using JavaScript and Microsoft's [Playwright](https://playwright.dev/) framework. 
+Split it up so the validators can be tested without a browser, and so changes to HN's DOM only touch one file.
 
-1. Install node modules by running `npm i`.
+## The tricky bit — pagination shift
 
-2. Edit the `index.js` file in this project to go to [Hacker News/newest](https://news.ycombinator.com/newest) and validate that EXACTLY the first 100 articles are sorted from newest to oldest. You can run your script with the `node index.js` command.
+New articles get posted to HN every few seconds. 100 articles means ~4 "More" clicks. If a new article drops between my page 1 and page 2 loads, every existing article shifts down a spot and I'd see duplicates across pages.
 
-Note that you are welcome to update Playwright or install other packages as you see fit, however you must utilize Playwright in this assignment.
+Fix: collect into a Map keyed by URL. Duplicates overwrite themselves. Keep paginating until the Map has 100 entries, then slice.
 
-### Question 2
+## Timestamps
 
-Why do you want to work at QA Wolf? Please record a short, ~2 min video using [Loom](https://www.loom.com/) that includes:
+The `.age` element has a `title` attribute like `"2026-04-20T14:32:00 1745160720"` — I parse the Unix seconds out of that instead of the "5 minutes ago" text, which has bad resolution and lags.
 
-1. Your answer 
+Newest-to-oldest means descending by timestamp. I check `prev >= curr` pairwise.
 
-2. A walk-through demonstration of your code, showing a successful execution
+## Extra checks
 
-The answer and walkthrough should be combined into *one* video, and must be recorded using Loom as the submission page only accepts Loom links.
+Sort order is the stated task, but a sort check alone wouldn't catch:
 
-## Frequently Asked Questions
+- duplicate URLs
+- timestamps in the future (clock skew / parse bugs)
+- empty titles
+- NaN timestamps
 
-### What is your hiring process? When will I hear about next steps?
+Added those as separate invariants. They run after the sort check and report separately.
 
-This take home assignment is the first step in our hiring process, followed by a final round interview if it goes well. **We review every take home assignment submission and promise to get back to you either way within two weeks (usually sooner).** The only caveat is if we are out of the office, in which case we will get back to you when we return. If it has been more than two weeks and you have not heard from us, please do follow up.
+## Trade-offs
 
-The final round interview is a 2-hour technical work session that reflects what it is like to work here. We provide a $150 stipend for your time for the final round interview regardless of how it goes. After that, there may be a short chat with our director about your experience and the role.
+- **Standalone script, not `@playwright/test` runner.** The assignment says `node index.js`, so I kept it that way. I use `expect` from `@playwright/test` for the title assertion.
+- **Headed by default** so it's easier to watch. One-line config change for CI.
+- **Single browser.** Cross-browser runs would be the next thing to add.
+- **No retry on "More" click.** HN has been stable for me, but for production I'd wrap clicks with a retry + backoff.
 
-Our hiring process is rolling where we review candidates until we have filled our openings. If there are no openings left, we will keep your contact information on file and reach out when we are hiring again.
+## If I had more time
 
-### Having trouble uploading your assignment?
-Be sure to delete your `node_modules` file, then zip your assignment folder prior to upload. 
+- Run it 50 times and measure flake rate
+- Cross-check timestamps against the HN Firebase API as an independent source of truth
+- Unit tests for `validators.js` (they're pure, so it'd be quick)
 
-### How do you decide who to hire?
+## Note
 
-We evaluate candidates based on three criteria:
-
-- Technical ability (as demonstrated in the take home and final round)
-- Customer service orientation (as this role is customer facing)
-- Alignment with our mission and values (captured [here](https://qawolf.notion.site/Mission-and-Values-859c7d0411ba41349e1b318f4e7abc8f))
-
-This means whether we hire you is based on how you do during our interview process, not on your previous experience (or lack thereof). Note that you will also need to pass a background check to work here as our customers require this.
-
-### How can I help my application stand out?
-
-While the assignment has clear requirements, we encourage applicants to treat it as more than a checklist. If you're genuinely excited about QA Wolf, consider going a step further—whether that means building a simple user interface, adding detailed error handling or reporting, improving the structure of the script, or anything else that showcases your unique perspective.
-
-There's no "right" answer—we're curious to see what you choose to do when given freedom and ambiguity. In a world where tools can help generate working code quickly and make it easier than ever to complete technical take-homes, we value originality and intentionality. If that resonates with you, use this assignment as a chance to show us how you think.
-
-Applicants who approach the assignment as a creative challenge, not just a checklist, tend to perform best in our process.
+I used AI to help with code review and structure, the way I'd use a senior engineer. The pagination-shift catch, the invariants, and the module split are mine, I can explain every line.
